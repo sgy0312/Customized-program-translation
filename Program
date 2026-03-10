@@ -1,0 +1,842 @@
+*&---------------------------------------------------------------------*
+*& Report ZCAR002
+*&---------------------------------------------------------------------*
+*&批量翻译程序文本
+*&---------------------------------------------------------------------*
+REPORT zcar002.
+
+TYPE-POOLS: slis .
+DEFINE mac01 .
+  CLEAR gwa_fieldcat .
+  gwa_fieldcat-fieldname     = &1 .
+  gwa_fieldcat-scrtext_l     = &2 .
+  gwa_fieldcat-edit          = &3 .
+  gwa_fieldcat-key           = &4 .
+  gwa_fieldcat-no_zero       = 'X' .
+
+  CASE gwa_fieldcat-fieldname .
+    WHEN 'ZDCO1'.
+      gwa_fieldcat-ref_field = 'ZDCOU' .
+      gwa_fieldcat-ref_table = 'ZCAT006'  .
+*        GWA_FIELDCAT-COL_OPT = 'X'  .
+  ENDCASE.
+
+  APPEND  gwa_fieldcat TO  gt_fieldcat .
+END-OF-DEFINITION.
+
+
+*----------------------------------------------------------------------*
+* Tables
+*----------------------------------------------------------------------*
+TABLES:trdir .
+
+*----------------------------------------------------------------------*
+* CONSTANTS
+*----------------------------------------------------------------------*
+DATA : gv_lights_name TYPE lvc_cifnm VALUE 'LIGHT' ."红绿灯
+
+*&---------------------------------------------------------------------*
+*& VARIABLES DECLARATION
+*&---------------------------------------------------------------------*
+
+
+*----------------------------------------------------------------------*
+* TYPES
+*----------------------------------------------------------------------*
+TYPES : BEGIN OF ty_alv .
+          INCLUDE TYPE lxe_pcx_s1 .
+TYPES :   selec(1) TYPE c,
+          ltype    TYPE lxeobjtype , "翻译对象类型
+          lobjn    TYPE lxeobjname , "翻译对象
+          name     TYPE trdir-name,
+          light(1) TYPE c,
+*          ZDCO1(255) TYPE C,
+          zdco1    TYPE string,
+          lang1    TYPE sy-langu,
+          lang2    TYPE sy-langu,
+
+        END OF ty_alv .
+
+*&---------------------------------------------------------------------*
+* GLOBAL DATA
+*&---------------------------------------------------------------------*
+DATA: gwa_layout     TYPE lvc_s_layo.            "ALV布局工作区
+DATA: gwa_fieldcat TYPE lvc_s_fcat.              "字段工作区
+DATA : gwa_alv TYPE ty_alv .
+DATA gwa_exclude TYPE ui_func.
+DATA : gwa_variant  TYPE  disvariant .
+*DATA : GWA_TSTCV TYPE TSTCV .
+
+*&---------------------------------------------------------------------*
+*  INTERNAL TABLE DECLARATION
+*&---------------------------------------------------------------------*
+DATA : gt_trdir TYPE TABLE OF trdir .
+DATA : gt_rsmptexts TYPE TABLE OF rsmptexts  .
+DATA : gt_d020s TYPE TABLE OF d020s .
+DATA : gt_alv TYPE TABLE OF ty_alv .
+DATA : gt_fieldcat TYPE lvc_t_fcat.
+DATA : gt_tstc TYPE TABLE OF tstc .
+DATA : gt_exclude TYPE TABLE OF ui_func.
+DATA: gt_split_container TYPE REF TO cl_gui_splitter_container.
+DATA: gt_container TYPE REF TO cl_gui_custom_container.
+DATA: gt_alv_control TYPE REF TO cl_gui_alv_grid.
+*DATA : GT_TSTCV TYPE TABLE OF TSTCV .
+*DATA: GT_RECEIVER TYPE REF TO LCL_EVENT_RECEIVER .
+
+*&---------------------------------------------------------------------*
+* SELECTION-SCREEN
+*&---------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK a1 WITH FRAME TITLE TEXT-001.
+
+  SELECT-OPTIONS : s_name FOR trdir-name ."程序
+  SELECT-OPTIONS : s_cnam FOR trdir-cnam  .
+  SELECT-OPTIONS : s_cdat FOR trdir-cdat  .
+  SELECT-OPTIONS : s_unam FOR trdir-unam  .
+  SELECT-OPTIONS : s_udat FOR trdir-udat  .
+
+SELECTION-SCREEN END OF BLOCK a1.
+
+SELECTION-SCREEN BEGIN OF BLOCK a2 WITH FRAME TITLE TEXT-002.
+
+  PARAMETERS : p_lang1 TYPE makt-spras OBLIGATORY DEFAULT '1'."源语言
+  PARAMETERS : p_lang2 TYPE makt-spras OBLIGATORY."目标语言
+
+SELECTION-SCREEN END OF BLOCK a2.
+
+INITIALIZATION.
+
+
+AT SELECTION-SCREEN.
+
+*  AUTHORITY-CHECK OBJECT 'ZPPAR02'
+*                ID 'FEVOR' FIELD P_FEVOR .
+*  IF SY-SUBRC <> 0 .
+*    MESSAGE E035 WITH P_FEVOR .
+*  ENDIF .
+
+START-OF-SELECTION.
+
+  PERFORM sub_get_data.             "获取数据
+  PERFORM sub_deal_data.            "处理数据
+
+END-OF-SELECTION.
+
+  PERFORM sub_show_alv.
+*  CALL  SCREEN 9000 .
+*&---------------------------------------------------------------------*
+*& Form SUB_GET_DATA
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_get_data .
+
+
+  PERFORM sub_get_trdir ."获取程序
+  PERFORM sub_get_d020s ."获取程序屏幕
+  PERFORM sub_get_rsmptexts ."获取状态
+  PERFORM sub_get_tstc ."获取事务码描述
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_GET_TRDIR
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_get_trdir .
+
+  CLEAR  gt_trdir .
+  SELECT *
+    INTO TABLE gt_trdir
+    FROM trdir
+    WHERE name IN s_name .
+  IF sy-subrc <> 0 .
+    MESSAGE '没有符合条件的数据' TYPE 'S' DISPLAY LIKE 'E' .
+    LEAVE LIST-PROCESSING .
+  ENDIF .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_DEAL_DATA
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_deal_data .
+
+  DATA : lwa_trdir TYPE trdir .
+  DATA : lwa_rsmptexts TYPE rsmptexts  .
+  DATA : lwa_d020s     TYPE d020s .
+  DATA : lwa_tstc TYPE tstc .
+
+  DATA : lwa_pcx TYPE lxe_pcx_s1 .
+  DATA : lt_pcx TYPE TABLE OF lxe_pcx_s1 .
+
+  DATA : lwa_alv TYPE ty_alv .
+
+  DATA : lv_lobjn TYPE lxeobjname .
+
+*    DATA : GT_RSMPTEXTS TYPE TABLE OF RSMPTEXTS  .
+*    DATA : GT_D020S     TYPE TABLE OF D020S .
+
+  CLEAR gt_alv .
+
+  LOOP AT gt_trdir INTO lwa_trdir .
+
+    "事务码
+    LOOP AT gt_tstc INTO lwa_tstc  WHERE pgmna = lwa_trdir-name .
+      CLEAR lwa_alv .
+      CLEAR lt_pcx .
+      lwa_alv-ltype   = 'TRAN'  ."翻译对象类型
+      lwa_alv-light = '2' .
+      lwa_alv-name = lwa_trdir-name .
+      lwa_alv-lang1 = p_lang1  .
+      lwa_alv-lang2 = p_lang2  .
+      lwa_alv-lobjn   =  lwa_trdir-name ."翻译对象
+      CALL FUNCTION 'LXE_OBJ_TEXT_PAIR_READ_TRAN'
+        EXPORTING
+          t_r3_lang = p_lang2
+          s_r3_lang = p_lang1
+          objtype   = lwa_alv-ltype
+          objname   = lwa_alv-lobjn
+          read_only = 'X'
+*          read_only = 'X'
+        TABLES
+          lt_pcx_s1 = lt_pcx.
+      PERFORM sub_add_alv TABLES lt_pcx
+                          USING lwa_alv .
+    ENDLOOP  .
+
+
+
+    "报表元素
+    CLEAR lwa_alv .
+    CLEAR lt_pcx .
+    lwa_alv-ltype   = 'REPT'  ."翻译对象类型
+    lwa_alv-light   = '2' .
+    lwa_alv-name    = lwa_trdir-name .
+    lwa_alv-lobjn   =  lwa_trdir-name ."翻译对象
+    lwa_alv-lang1 = p_lang1  .
+    lwa_alv-lang2 = p_lang2  .
+    CALL FUNCTION 'LXE_OBJ_TEXT_PAIR_READ_REPT'
+      EXPORTING
+        t_r3_lang = p_lang2
+        s_r3_lang = p_lang1
+        o_r3_lang = p_lang1
+        objtype   = lwa_alv-ltype
+        objname   = lwa_alv-lobjn
+        read_only = '' "
+*        read_only = 'X' "DELETE BY SIE-CHANGXY 20231125
+      TABLES
+        lt_pcx_s1 = lt_pcx.
+    PERFORM sub_add_alv TABLES lt_pcx
+                        USING lwa_alv .
+
+
+    "屏幕元素
+    LOOP AT gt_d020s INTO lwa_d020s  WHERE prog = lwa_trdir-name .
+      CLEAR lwa_alv .
+      CLEAR lt_pcx .
+      lwa_alv-ltype   = 'SCRT'  ."翻译对象类型
+      lwa_alv-light = '2' .
+      lwa_alv-name = lwa_trdir-name .
+      lwa_alv-lang1 = p_lang1  .
+      lwa_alv-lang2 = p_lang2  .
+*      LWA_ALV-LOBJN   =  LWA_TRDIR-NAME &&  LWA_D020S-DNUM ."翻译对象
+      CONCATENATE lwa_trdir-name  lwa_d020s-dnum  INTO lwa_alv-lobjn RESPECTING BLANKS .
+      CALL FUNCTION 'LXE_OBJ_TEXT_PAIR_READ_SCRT'
+        EXPORTING
+          t_r3_lang = p_lang2
+          s_r3_lang = p_lang1
+          objtype   = lwa_alv-ltype
+          objname   = lwa_alv-lobjn
+          read_only = 'X'
+        TABLES
+          lt_pcx_s1 = lt_pcx.
+      PERFORM sub_add_alv TABLES lt_pcx
+                          USING lwa_alv .
+    ENDLOOP  .
+
+*    "菜单元素
+*    LOOP AT GT_RSMPTEXTS INTO LWA_RSMPTEXTS WHERE PROGNAME = LWA_TRDIR-NAME.
+*      CLEAR LWA_ALV .
+*      CLEAR LT_PCX .
+*      LWA_ALV-LTYPE   = 'SCRH'  ."翻译对象类型
+*      LWA_ALV-LIGHT = '2' .
+*      LWA_ALV-NAME = LWA_TRDIR-NAME .
+**      LWA_ALV-LOBJN   =  LWA_TRDIR-NAME &&  LWA_RSMPTEXTS-OBJ_CODE ."翻译对象
+*      CONCATENATE LWA_TRDIR-NAME  LWA_RSMPTEXTS-OBJ_CODE INTO LWA_ALV-LOBJN RESPECTING BLANKS .
+*      CALL FUNCTION 'LXE_OBJ_TEXT_PAIR_READ_SCRH'
+*        EXPORTING
+*          T_R3_LANG = P_LANG2
+*          S_R3_LANG = P_LANG1
+*          OBJTYPE   = LWA_ALV-LTYPE
+*          OBJNAME   = LWA_ALV-LOBJN
+*          READ_ONLY = 'X'
+*        TABLES
+*          LT_PCX_S1 = LT_PCX.
+*
+*      PERFORM SUB_ADD_ALV TABLES LT_PCX
+*                          USING LWA_ALV .
+*    ENDLOOP  .
+
+    "菜单元素
+    LOOP AT gt_rsmptexts INTO lwa_rsmptexts WHERE progname = lwa_trdir-name.
+      CLEAR lwa_alv .
+      CLEAR lt_pcx .
+      lwa_alv-ltype   = 'CUA'  ."翻译对象类型
+      lwa_alv-light   = '2' .
+      lwa_alv-name    = lwa_trdir-name .
+      lwa_alv-lang1   = p_lang1  .
+      lwa_alv-lang2   = p_lang2  .
+*      LWA_ALV-LOBJN   =  LWA_TRDIR-NAME &&  LWA_RSMPTEXTS-OBJ_CODE ."翻译对象
+      CONCATENATE lwa_trdir-name  lwa_rsmptexts-obj_code INTO lwa_alv-lobjn RESPECTING BLANKS .
+      CALL FUNCTION 'LXE_OBJ_TEXT_PAIR_READ_CUA'
+        EXPORTING
+          t_r3_lang = p_lang2
+          s_r3_lang = p_lang1
+          objtype   = lwa_alv-ltype
+          objname   = lwa_alv-lobjn
+          read_only = 'X'
+        TABLES
+          lt_pcx_s1 = lt_pcx.
+
+      PERFORM sub_add_alv TABLES lt_pcx
+                          USING lwa_alv .
+    ENDLOOP  .
+
+  ENDLOOP .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_GET_D020S
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_get_d020s .
+
+  CLEAR gt_d020s .
+
+  SELECT *
+    INTO TABLE gt_d020s
+    FROM d020s
+    FOR ALL ENTRIES IN gt_trdir
+    WHERE prog = gt_trdir-name
+      AND dnum <> '1000' .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_GET_RSMPTEXTS
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_get_rsmptexts .
+
+  CLEAR gt_rsmptexts .
+
+  SELECT *
+    INTO TABLE gt_rsmptexts
+    FROM rsmptexts
+    FOR ALL ENTRIES IN gt_trdir
+    WHERE progname = gt_trdir-name
+      AND sprsl = p_lang1
+      AND obj_type = 'C' .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_GET_TRANS
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*&      --> lWA_ALV
+*&      --> P_LANG2
+*&      --> APPEND
+*&      --> lWA_ALV
+*&      --> TO
+*&      --> GT_ALV
+*&---------------------------------------------------------------------*
+FORM sub_get_trans  USING    pv_char
+                             pv_cha2
+                             pv_lang2 TYPE sy-langu
+                            .
+
+  CHECK pv_char <> '' .
+  DATA : lv_text TYPE string .
+  lv_text =  pv_char.
+
+  CALL METHOD zcl_ca_common=>customization_translation
+    EXPORTING
+      i_ztext = lv_text  "原文
+      i_langu = pv_lang2
+    IMPORTING
+      e_ztext = lv_text. "译文
+  pv_cha2 =  lv_text .
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_ADD_ALV
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*&      --> LT_PCX
+*&      --> lWA_ALV
+*&---------------------------------------------------------------------*
+FORM sub_add_alv  TABLES   pt_pcx STRUCTURE lxe_pcx_s1
+                  USING    pwa_alv TYPE ty_alv .
+
+  DATA : lwa_pcx TYPE lxe_pcx_s1 .
+  IF pt_pcx[] IS NOT INITIAL .
+    LOOP AT pt_pcx INTO lwa_pcx .
+      MOVE-CORRESPONDING lwa_pcx TO pwa_alv .
+      PERFORM sub_get_trans USING pwa_alv-s_text   "按语言翻译
+                                  pwa_alv-zdco1
+                                  p_lang2 .
+      APPEND pwa_alv TO gt_alv .
+    ENDLOOP .
+  ENDIF .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_SHOW_ALV
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_show_alv .
+
+*-行属性
+  CLEAR gwa_layout.
+
+  gwa_layout-zebra        = 'X' .              " 显示界面成色带交替
+  gwa_layout-sel_mode     = 'B' .              " 选择模式()
+  gwa_layout-detailinit   = 'X' .              " 是否可以弹出细节屏幕
+  gwa_layout-cwidth_opt   = 'X' .              " 优化宽度
+  gwa_layout-box_fname    = 'SELEC' .            " 指明复选框
+  gwa_layout-grid_title = 'Flight'(100).
+  gwa_layout-excp_fname = gv_lights_name.
+
+*-列属性
+  CLEAR gt_fieldcat[] .
+  mac01 : 'NAME' '程序名' '' '' .
+  mac01 : 'LTYPE' '对象类型' '' '' .
+  mac01 : 'LOBJN' '对象' '' '' .
+  mac01 : 'TEXTKEY' '文本码' '' '' .
+  mac01 : 'LANG1' '原语言' '' '' .
+  mac01 : 'S_TEXT' '原文' '' '' .
+  mac01 : 'LANG2' '目标语言' '' '' .
+  mac01 : 'T_TEXT' '原翻译' '' '' .
+  mac01 : 'ZDCO1' '本次翻译' 'X' '' .
+
+*-ALV函数
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY_LVC'
+    EXPORTING
+      i_callback_program       = sy-repid
+      i_callback_pf_status_set = 'SUB_STATUS'
+      i_callback_user_command  = 'SUB_USER_COMMAND'
+      is_layout_lvc            = gwa_layout
+      it_fieldcat_lvc          = gt_fieldcat
+      i_save                   = 'A'
+    TABLES
+      t_outtab                 = gt_alv[]
+    EXCEPTIONS
+      program_error            = 1
+      OTHERS                   = 2.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      FORM  SUB_STATUS
+*&---------------------------------------------------------------------*
+*       状态栏
+*----------------------------------------------------------------------*
+*  -->  P1        TEXT
+*  <--  P2        TEXT
+*----------------------------------------------------------------------*
+
+FORM sub_status USING rt_extab TYPE slis_t_extab .
+
+  CLEAR:   rt_extab.
+  REFRESH: rt_extab.
+  SET PF-STATUS 'ZSTAT1000' EXCLUDING rt_extab .
+*  SET TITLEBAR  'ZSTAT1000'  .
+
+ENDFORM. " LVC_SET_STATUS
+
+*&---------------------------------------------------------------------*
+*&      FORM  SUB_USER_COMMAND
+*&---------------------------------------------------------------------*
+*       控制按钮
+*----------------------------------------------------------------------*
+*  -->  P1        TEXT
+*  <--  P2        TEXT
+*----------------------------------------------------------------------*
+FORM sub_user_command USING p_ucomm TYPE sy-ucomm
+                             p_rs_selfield TYPE slis_selfield.
+
+
+  DATA:
+   lwa_grid     TYPE REF TO cl_gui_alv_grid.         "GRID定义
+
+* 取得屏幕更新数据
+  CALL FUNCTION 'GET_GLOBALS_FROM_SLVC_FULLSCR'
+    IMPORTING
+      e_grid = lwa_grid.
+
+  CALL METHOD lwa_grid->check_changed_data.
+
+  CASE p_ucomm.
+*    WHEN '&IC1' .   " 判断用户的动作
+    WHEN 'ZFAN'  ."翻译
+      PERFORM sub_zfan_data .
+  ENDCASE.
+
+*-同时内表中的数据也随之刷新
+  p_rs_selfield-col_stable = 'X' .   " 行
+  p_rs_selfield-row_stable = 'X' .   " 列
+  p_rs_selfield-refresh    = 'X' .   " 当用户在显式界面上对数据进行修改时，
+
+ENDFORM. " LVC_USER_COMMAND
+*&---------------------------------------------------------------------*
+*& Form SUB_ZFAN_DATA
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_zfan_data .
+
+  DATA : lt_alv TYPE TABLE OF ty_alv .
+  DATA : lwa_alv TYPE ty_alv .
+
+  DATA : lwa_d020s TYPE d020s .
+  DATA : lwa_rsmptexts TYPE rsmptexts .
+  DATA : lwa_tstc TYPE tstc .
+
+  lt_alv[] = gt_alv[] .
+
+  DELETE lt_alv WHERE selec = '' .
+  SORT lt_alv BY name .
+  DELETE ADJACENT DUPLICATES FROM lt_alv
+           COMPARING name .
+
+  LOOP AT lt_alv INTO lwa_alv .
+
+
+
+    "事务码
+    LOOP AT gt_tstc INTO lwa_tstc  WHERE pgmna = lwa_alv-name .
+
+      "事务码
+      CLEAR  lwa_alv-lobjn .
+      lwa_alv-lobjn   =  lwa_tstc-tcode ."翻译对象
+      PERFORM sub_up_trans  USING lwa_alv
+                                   'TRAN'
+                                   'LXE_OBJ_TEXT_WRITE_TRAN'   .
+    ENDLOOP  .
+
+
+    "报表元素
+    CLEAR  lwa_alv-lobjn .
+    lwa_alv-lobjn   =  lwa_alv-name ."翻译对象
+    PERFORM sub_up_trans  USING lwa_alv
+                                 'REPT'
+                                 'LXE_OBJ_TEXT_WRITE_REPT'   .
+
+    "屏幕元素
+    LOOP AT gt_d020s INTO lwa_d020s  WHERE prog  = lwa_alv-name.
+
+*      LWA_ALV-LOBJN   =  LWA_ALV-NAME &&  LWA_D020S-DNUM ."翻译对象
+      CLEAR lwa_alv-lobjn .
+      CONCATENATE lwa_d020s-prog  lwa_d020s-dnum  INTO lwa_alv-lobjn RESPECTING BLANKS .
+      PERFORM sub_up_trans  USING lwa_alv
+                            'SCRT'
+                            'LXE_OBJ_TEXT_WRITE_SCRT'  .
+*      PERFORM frm_active_screen USING lwa_d020s . "DELETE BY CHANGXY 20231205
+
+    ENDLOOP  .
+
+    "状态栏元素
+    LOOP AT gt_rsmptexts INTO lwa_rsmptexts  WHERE progname  = lwa_alv-name.
+
+*      LWA_ALV-LOBJN   =  LWA_ALV-NAME &&  LWA_D020S-DNUM ."翻译对象
+      CLEAR lwa_alv-lobjn .
+      CONCATENATE lwa_rsmptexts-progname   lwa_rsmptexts-obj_code  INTO lwa_alv-lobjn RESPECTING BLANKS .
+      PERFORM sub_up_trans  USING lwa_alv
+                      'CUA'
+                      'LXE_OBJ_TEXT_WRITE_CUA'.
+
+    ENDLOOP  .
+
+*    COMMIT WORK AND WAIT .
+    lwa_alv-light = '3' .
+    MODIFY gt_alv FROM lwa_alv
+         TRANSPORTING  light
+          WHERE name =  lwa_alv-name
+            AND selec = 'X' .
+
+
+  ENDLOOP .
+
+
+
+
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SUB_UP_TRANS
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*&      --> LT_PCX
+*&      --> LWA_ALV
+*&---------------------------------------------------------------------*
+FORM sub_up_trans  USING    pwa_alv TYPE ty_alv
+                             pv_type TYPE lxeobjtype
+                             pv_zfan .
+
+  DATA : lwa_pcx TYPE lxe_pcx_s1 .
+  DATA : lwa_pcxd TYPE lxe_pcx_s1 .
+  DATA : lt_pcx TYPE TABLE OF lxe_pcx_s1 .
+  DATA : lt_pcxl TYPE TABLE OF lxe_pcx_s1 ."临时存储屏幕 屏幕翻译需要先进行读取
+  DATA : lt_pcxd TYPE TABLE OF lxe_pcx_s1 ."删除屏幕翻译 屏幕翻译需要先进行删除
+
+  CLEAR lt_pcx .
+  LOOP AT gt_alv INTO gwa_alv WHERE name = pwa_alv-name
+                                AND ltype =  pv_type
+                                AND lobjn =  pwa_alv-lobjn  .
+*                                 AND SELEC = 'X' .
+    CLEAR lwa_pcx  .
+    MOVE-CORRESPONDING  gwa_alv TO lwa_pcx .
+    MOVE-CORRESPONDING  gwa_alv TO lwa_pcxd .
+    IF gwa_alv-selec = 'X' .
+      lwa_pcx-t_text = gwa_alv-zdco1 .
+      lwa_pcxd-t_text = '' .
+    ELSE .
+      lwa_pcx-t_text = gwa_alv-t_text .
+      lwa_pcxd-t_text = gwa_alv-t_text .
+    ENDIF .
+    APPEND lwa_pcx  TO lt_pcx .
+    APPEND lwa_pcxd  TO lt_pcxd .
+
+  ENDLOOP .
+  IF sy-subrc = 0 .
+
+    IF gwa_alv-ltype = 'SCRT' .
+      CALL FUNCTION 'LXE_OBJ_TEXT_PAIR_READ_SCRT'
+        EXPORTING
+          t_r3_lang = p_lang2
+          s_r3_lang = p_lang1
+          objtype   = gwa_alv-ltype
+          objname   = gwa_alv-lobjn
+          read_only = ''
+        TABLES
+          lt_pcx_s1 = lt_pcxl.
+
+**      SET UPDATE TASK LOCAL .
+*      CALL FUNCTION PV_ZFAN
+*        EXPORTING
+*          R3_LANG   = P_LANG2
+*          OBJTYPE   = GWA_ALV-LTYPE
+*          OBJNAME   = GWA_ALV-LOBJN
+*        TABLES
+*          LT_PCX_S1 = LT_PCXD.
+*      IF SY-SUBRC = 0 .
+*        COMMIT WORK AND WAIT .
+*        WAIT UP TO 1 SECONDS .
+*      ENDIF .
+    ENDIF .
+
+*    SET UPDATE TASK LOCAL .
+*    IF GWA_ALV-LTYPE <> 'SCRT' .
+    CALL FUNCTION pv_zfan
+      EXPORTING
+        r3_lang   = p_lang2
+        objtype   = gwa_alv-ltype
+        objname   = gwa_alv-lobjn
+      TABLES
+        lt_pcx_s1 = lt_pcx.
+    IF sy-subrc = 0 .
+      COMMIT WORK AND WAIT .
+    ENDIF .
+*    ENDIF .
+  ENDIF .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form sub_get_TSTC
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_get_tstc .
+
+  CLEAR gt_tstc .
+  SELECT *
+    INTO TABLE gt_tstc
+    FROM tstc
+    WHERE pgmna IN s_name .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Module STATUS_9000 OUTPUT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+MODULE status_9000 OUTPUT.
+  SET PF-STATUS  'ZSTAT1000'.
+* SET TITLEBAR 'xxx'.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*& Module ALV_DISPLAY OUTPUT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+MODULE alv_display OUTPUT.
+
+  IF gt_split_container IS INITIAL.
+
+*-行属性
+    CLEAR gwa_layout.
+
+    gwa_layout-zebra        = 'X' .              " 显示界面成色带交替
+    gwa_layout-sel_mode     = 'B' .              " 选择模式()
+    gwa_layout-detailinit   = 'X' .              " 是否可以弹出细节屏幕
+    gwa_layout-cwidth_opt   = 'X' .              " 优化宽度
+    gwa_layout-box_fname    = 'SELEC' .            " 指明复选框
+    gwa_layout-grid_title = 'Flight'(100).
+    gwa_layout-excp_fname = gv_lights_name.
+
+
+*    "清楚多余的按钮
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_COPY_ROW.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_DELETE_ROW.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_APPEND_ROW.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_INSERT_ROW.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_MOVE_ROW.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_COPY.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_CUT.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_PASTE.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_PASTE_NEW_ROW.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_LOC_UNDO.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_CHECK.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_REFRESH.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+**    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_MB_SUM.
+**    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+*    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_PRINT.
+*    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+**    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_SORT_ASC .
+**    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+**    GWA_EXCLUDE = CL_GUI_ALV_GRID=>MC_FC_SORT_DSC .
+**    APPEND GWA_EXCLUDE TO GT_EXCLUDE.
+
+
+*    IF GV_FREE = 'X' .
+*      CALL METHOD GT_ALV_CONTROL->REFRESH_TABLE_DISPLAY.
+*    ELSE .
+    CREATE OBJECT gt_container
+      EXPORTING
+        container_name = 'ALV'.
+    CREATE OBJECT gt_alv_control
+      EXPORTING
+        i_parent = gt_container.
+
+*-列属性
+    CLEAR gt_fieldcat[] .
+    mac01 : 'NAME' '程序名' '' '' .
+    mac01 : 'LTYPE' '对象类型' '' '' .
+    mac01 : 'LOBJN' '对象' '' '' .
+    mac01 : 'TEXTKEY' '文本码' '' '' .
+    mac01 : 'LANG1' '原语言' '' '' .
+    mac01 : 'S_TEXT' '原文' '' '' .
+    mac01 : 'LANG2' '目标语言' '' '' .
+    mac01 : 'T_TEXT' '原翻译' '' '' .
+    mac01 : 'ZDCO1' '本次翻译' 'X' '' .
+
+    gwa_variant-report = sy-repid .
+    CALL METHOD gt_alv_control->set_table_for_first_display
+      EXPORTING
+        is_layout            = gwa_layout
+        it_toolbar_excluding = gt_exclude
+        i_save               = 'S'
+        is_variant           = gwa_variant
+      CHANGING
+        it_outtab            = gt_alv
+        it_fieldcatalog      = gt_fieldcat.
+
+*      CREATE OBJECT GT_RECEIVER.
+*      SET HANDLER GT_RECEIVER->HANDLE_DOUBLE_CLICK FOR GT_ALV_CONTROL."注册双击
+*      SET HANDLER GT_RECEIVER->HANDLE_USER_COMMAND FOR GT_ALV_CONTROL."注册控制
+*      SET HANDLER GT_RECEIVER->HANDLE_TOOLBAR FOR GT_ALV_CONTROL."注册工具栏
+*  SET HANDLER GT_RECEIVER->HANDLE_MODIFY FOR GT_ALV_CONTROL."注册回车
+*      SET HANDLER GT_RECEIVER->HANDLE_DATA_CHANGED FOR GT_ALV_CONTROL."注册监听
+*      CALL METHOD GT_ALV_CONTROL->SET_TOOLBAR_INTERACTIVE."传入工具栏
+*      CALL METHOD GT_ALV_CONTROL->SET_USER_COMMAND  "传入控制
+*        EXPORTING
+*          I_UCOMM = OK_CODE.
+*    ENDIF .
+  ENDIF .
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*& Form FRM_ACTIVE_SCREEN
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*&      --> LWA_D020S
+*&---------------------------------------------------------------------*
+FORM frm_active_screen  USING    pwa_d020s TYPE d020s .
+  DATA : lv_zprog TYPE bdcdata-fval .
+  DATA : lv_zscre TYPE bdcdata-fval .
+
+  lv_zprog = pwa_d020s-prog .
+  lv_zscre = pwa_d020s-dnum .
+
+  CALL FUNCTION 'ZXA_BDC_ACTIVE_SCREEN'
+    EXPORTING
+*     CTU         = 'X'
+*     MODE        = 'N'
+*     UPDATE      = 'L'
+*     GROUP       =
+*     USER        =
+*     KEEP        =
+*     HOLDDATE    =
+*     NODATA      = '/'
+      dynprog_001 = lv_zprog
+      dynnr_002   = lv_zscre
+*    IMPORTING
+*     SUBRC       =
+*    TABLES
+*     MESSTAB     =
+    .
+
+ENDFORM.
